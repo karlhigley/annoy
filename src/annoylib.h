@@ -414,6 +414,7 @@ struct Angular : Base {
      * more memory to be able to fit the vector outside
      */
     S n_descendants;
+    S tag;
     union {
       S children[2]; // Will possibly store more than 2
       T norm;
@@ -487,6 +488,7 @@ struct DotProduct : Angular {
      * This is an extension of the Angular node with an extra attribute for the scaled norm.
      */
     S n_descendants;
+    S tag;
     S children[2]; // Will possibly store more than 2
     T dot_factor;
     T v[1]; // We let this one overflow intentionally. Need to allocate at least 1 to make GCC happy
@@ -596,6 +598,7 @@ struct Hamming : Base {
   template<typename S, typename T>
   struct ANNOY_NODE_ATTRIBUTE Node {
     S n_descendants;
+    S tag;
     S children[2];
     T v[1];
   };
@@ -692,6 +695,7 @@ struct Minkowski : Base {
   template<typename S, typename T>
   struct ANNOY_NODE_ATTRIBUTE Node {
     S n_descendants;
+    S tag;
     T a; // need an extra constant term to determine the offset of the plane
     S children[2];
     T v[1];
@@ -787,6 +791,7 @@ class AnnoyIndexInterface {
  public:
   virtual ~AnnoyIndexInterface() {};
   virtual bool add_item(S item, const T* w, char** error=NULL) = 0;
+  virtual bool add_item_with_tag(S item, const T* w, S tag, char** error=NULL) = 0;
   virtual bool build(int q, char** error=NULL) = 0;
   virtual bool unbuild(char** error=NULL) = 0;
   virtual bool save(const char* filename, bool prefault=false, char** error=NULL) = 0;
@@ -794,11 +799,15 @@ class AnnoyIndexInterface {
   virtual bool load(const char* filename, bool prefault=false, char** error=NULL) = 0;
   virtual T get_distance(S i, S j) const = 0;
   virtual void get_nns_by_item(S item, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const = 0;
+  virtual void get_nns_by_item_and_tag(S item, int tag, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const = 0;
   virtual void get_nns_by_vector(const T* w, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const = 0;
+  virtual void get_nns_by_vector_and_tag(const T* w, int tag, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const = 0;
   virtual S get_n_items() const = 0;
   virtual S get_n_trees() const = 0;
+  virtual S get_n_tags() const = 0;
   virtual void verbose(bool v) = 0;
   virtual void get_item(S item, T* v) const = 0;
+  virtual S get_item_tag(S item) const = 0;
   virtual void set_seed(int q) = 0;
   virtual bool on_disk_build(const char* filename, char** error=NULL) = 0;
 };
@@ -818,6 +827,7 @@ public:
 
 protected:
   const int _f;
+  const int _n_tags;
   size_t _s;
   S _n_items;
   Random _random;
@@ -833,7 +843,7 @@ protected:
   bool _built;
 public:
 
-   AnnoyIndex(int f) : _f(f), _random() {
+  AnnoyIndex(int f, int nt=0) : _f(f), _n_tags(nt), _random() {
     _s = offsetof(Node, v) + _f * sizeof(T); // Size of each node
     _verbose = false;
     _built = false;
@@ -849,11 +859,15 @@ public:
   }
 
   bool add_item(S item, const T* w, char** error=NULL) {
-    return add_item_impl(item, w, error);
+    return add_item_impl(item, w, -1, error);
+  }
+
+  bool add_item_with_tag(S item, const T* w, S tag, char** error=NULL) {
+    return add_item_impl(item, w, tag, error);
   }
 
   template<typename W>
-  bool add_item_impl(S item, const W& w, char** error=NULL) {
+  bool add_item_impl(S item, const W& w, S tag, char** error=NULL) {
     if (_loaded) {
       showUpdate("You can't add an item to a loaded index\n");
       if (error) *error = (char *)"You can't add an item to a loaded index";
@@ -867,6 +881,7 @@ public:
     n->children[0] = 0;
     n->children[1] = 0;
     n->n_descendants = 1;
+    n->tag = tag;
 
     for (int z = 0; z < _f; z++)
       n->v[z] = w[z];
@@ -1057,8 +1072,8 @@ public:
       return false;
     } else if (size % _s) {
       // Something is fishy with this index!
-      showUpdate("Error: index size %zu is not a multiple of vector size %zu\n", (size_t)size, _s);
-      if (error) *error = (char *)"Index size is not a multiple of vector size";
+      showUpdate("Error: index size %zu is not a multiple of node size %zu\n", (size_t)size, _s);
+      if (error) *error = (char *)"Index size is not a multiple of node size";
       return false;
     }
 
@@ -1102,11 +1117,21 @@ public:
   void get_nns_by_item(S item, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
     // TODO: handle OOB
     const Node* m = _get(item);
-    _get_all_nns(m->v, n, search_k, result, distances);
+    _get_all_nns(m->v, -1, n, search_k, result, distances);
+  }
+
+  void get_nns_by_item_and_tag(S item, int tag, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
+    // TODO: handle OOB
+    const Node* m = _get(item);
+    _get_all_nns(m->v, tag, n, search_k, result, distances);
   }
 
   void get_nns_by_vector(const T* w, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
-    _get_all_nns(w, n, search_k, result, distances);
+    _get_all_nns(w, -1, n, search_k, result, distances);
+  }
+
+  void get_nns_by_vector_and_tag(const T* w, int tag, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
+    _get_all_nns(w, tag, n, search_k, result, distances);
   }
 
   S get_n_items() const {
@@ -1117,6 +1142,10 @@ public:
     return _roots.size();
   }
 
+  S get_n_tags() const {
+    return _n_tags;
+  }
+
   void verbose(bool v) {
     _verbose = v;
   }
@@ -1125,6 +1154,12 @@ public:
     // TODO: handle OOB
     Node* m = _get(item);
     memcpy(v, m->v, (_f) * sizeof(T));
+  }
+
+  S get_item_tag(S item) const {
+    // TODO: handle OOB
+    Node* m = _get(item);
+    return m->tag;
   }
 
   void set_seed(int seed) {
@@ -1240,7 +1275,7 @@ protected:
     return item;
   }
 
-  void _get_all_nns(const T* v, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
+  void _get_all_nns(const T* v, int tag, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
     Node* v_node = (Node *)alloca(_s);
     D::template zero_value<Node>(v_node);
     memcpy(v_node->v, v, sizeof(T) * _f);
@@ -1264,10 +1299,22 @@ protected:
       Node* nd = _get(i);
       q.pop();
       if (nd->n_descendants == 1 && i < _n_items) {
-        nns.push_back(i);
+        if (tag < 0 || nd->tag == tag) {
+          nns.push_back(i);
+        }
       } else if (nd->n_descendants <= _K) {
         const S* dst = nd->children;
-        nns.insert(nns.end(), dst, &dst[nd->n_descendants]);
+        if (tag < 0) {
+          nns.insert(nns.end(), dst, &dst[nd->n_descendants]);
+        } else {
+          for (S c = 0; c < nd->n_descendants; c++)
+          {
+            Node* child = _get(dst[c]);
+            if (child->tag == tag) {
+              nns.push_back(dst[c]);
+            }
+          }
+        }
       } else {
         T margin = D::margin(nd, v, _f);
         q.push(make_pair(D::pq_distance(d, margin, 1), static_cast<S>(nd->children[1])));

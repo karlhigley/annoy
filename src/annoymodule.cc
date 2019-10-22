@@ -44,7 +44,7 @@ class HammingWrapper : public AnnoyIndexInterface<int32_t, float> {
   // This translates binary (float) vectors into packed uint64_t vectors.
   // This is questionable from a performance point of view. Should reconsider this solution.
 private:
-  int32_t _f_external, _f_internal;
+  int32_t _f_external, _f_internal, _n_tags;
   AnnoyIndex<int32_t, uint64_t, Hamming, Kiss64Random> _index;
   void _pack(const float* src, uint64_t* dst) const {
     for (int32_t i = 0; i < _f_internal; i++) {
@@ -60,11 +60,16 @@ private:
     }
   };
 public:
-  HammingWrapper(int f) : _f_external(f), _f_internal((f + 63) / 64), _index((f + 63) / 64) {};
+  HammingWrapper(int f, int nt=0) : _f_external(f), _f_internal((f + 63) / 64), _n_tags(nt), _index((f + 63) / 64) { };
   bool add_item(int32_t item, const float* w, char**error) {
     vector<uint64_t> w_internal(_f_internal, 0);
     _pack(w, &w_internal[0]);
     return _index.add_item(item, &w_internal[0], error);
+  };
+  bool add_item_with_tag(int32_t item, const float* w, int32_t tag, char**error) {
+    vector<uint64_t> w_internal(_f_internal, 0);
+    _pack(w, &w_internal[0]);
+    return _index.add_item_with_tag(item, &w_internal[0], tag, error);
   };
   bool build(int q, char** error) { return _index.build(q, error); };
   bool unbuild(char** error) { return _index.unbuild(error); };
@@ -81,6 +86,10 @@ public:
       _index.get_nns_by_item(item, n, search_k, result, NULL);
     }
   };
+  void get_nns_by_item_and_tag(int32_t item, int tag, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
+    // TODO: Actually implement this
+    get_nns_by_item(item, n, search_k, result, distances);
+  };
   void get_nns_by_vector(const float* w, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
     vector<uint64_t> w_internal(_f_internal, 0);
     _pack(w, &w_internal[0]);
@@ -92,13 +101,21 @@ public:
       _index.get_nns_by_vector(&w_internal[0], n, search_k, result, NULL);
     }
   };
+  void get_nns_by_vector_and_tag(const float* w, int tag, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
+    // TODO: Actually implement this
+    get_nns_by_vector(w, n, search_k, result, distances);
+  };
   int32_t get_n_items() const { return _index.get_n_items(); };
   int32_t get_n_trees() const { return _index.get_n_trees(); };
+  int32_t get_n_tags() const { return _index.get_n_tags(); };
   void verbose(bool v) { _index.verbose(v); };
   void get_item(int32_t item, float* v) const {
     vector<uint64_t> v_internal(_f_internal, 0);
     _index.get_item(item, &v_internal[0]);
     _unpack(&v_internal[0], v);
+  };
+  int32_t get_item_tag(int32_t item) const {
+    return _index.get_item_tag(item);
   };
   void set_seed(int q) { _index.set_seed(q); };
   bool on_disk_build(const char* filename, char** error) { return _index.on_disk_build(filename, error); };
@@ -108,6 +125,7 @@ public:
 typedef struct {
   PyObject_HEAD
   int f;
+  int nt;
   AnnoyIndexInterface<int32_t, float>* ptr;
 } py_annoy;
 
@@ -120,24 +138,24 @@ py_an_new(PyTypeObject *type, PyObject *args, PyObject *kwargs) {
   }
   const char *metric = NULL;
 
-  static char const * kwlist[] = {"f", "metric", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|s", (char**)kwlist, &self->f, &metric))
+  static char const * kwlist[] = {"f", "metric", "num_tags", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|si", (char**)kwlist, &self->f, &metric, &self->nt))
     return NULL;
   if (!metric) {
     // This keeps coming up, see #368 etc
     PyErr_WarnEx(PyExc_FutureWarning, "The default argument for metric will be removed "
 		 "in future version of Annoy. Please pass metric='angular' explicitly.", 1);
-    self->ptr = new AnnoyIndex<int32_t, float, Angular, Kiss64Random>(self->f);
+    self->ptr = new AnnoyIndex<int32_t, float, Angular, Kiss64Random>(self->f, self->nt);
   } else if (!strcmp(metric, "angular")) {
-   self->ptr = new AnnoyIndex<int32_t, float, Angular, Kiss64Random>(self->f);
+   self->ptr = new AnnoyIndex<int32_t, float, Angular, Kiss64Random>(self->f, self->nt);
   } else if (!strcmp(metric, "euclidean")) {
-    self->ptr = new AnnoyIndex<int32_t, float, Euclidean, Kiss64Random>(self->f);
+    self->ptr = new AnnoyIndex<int32_t, float, Euclidean, Kiss64Random>(self->f, self->nt);
   } else if (!strcmp(metric, "manhattan")) {
-    self->ptr = new AnnoyIndex<int32_t, float, Manhattan, Kiss64Random>(self->f);
+    self->ptr = new AnnoyIndex<int32_t, float, Manhattan, Kiss64Random>(self->f, self->nt);
   } else if (!strcmp(metric, "hamming")) {
-    self->ptr = new HammingWrapper(self->f);
+    self->ptr = new HammingWrapper(self->f, self->nt);
   } else if (!strcmp(metric, "dot")) {
-    self->ptr = new AnnoyIndex<int32_t, float, DotProduct, Kiss64Random>(self->f);
+    self->ptr = new AnnoyIndex<int32_t, float, DotProduct, Kiss64Random>(self->f, self->nt);
   } else {
     PyErr_SetString(PyExc_ValueError, "No such metric");
     return NULL;
@@ -152,8 +170,9 @@ py_an_init(py_annoy *self, PyObject *args, PyObject *kwargs) {
   // Seems to be needed for Python 3
   const char *metric = NULL;
   int f;
-  static char const * kwlist[] = {"f", "metric", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|s", (char**)kwlist, &f, &metric))
+  int nt;
+  static char const * kwlist[] = {"f", "metric", "num_tags", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "i|si", (char**)kwlist, &f, &metric, &nt))
     return (int) NULL;
   return 0;
 }
@@ -165,9 +184,10 @@ py_an_dealloc(py_annoy* self) {
   Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
-
 static PyMemberDef py_annoy_members[] = {
   {(char*)"f", T_INT, offsetof(py_annoy, f), 0,
+   (char*)""},
+  {(char*)"nt", T_INT, offsetof(py_annoy, nt), 0,
    (char*)""},
   {NULL}	/* Sentinel */
 };
@@ -229,12 +249,18 @@ get_nns_to_python(const vector<int32_t>& result, const vector<float>& distances,
 }
 
 
-bool check_constraints(py_annoy *self, int32_t item, bool building) {
+bool check_constraints(py_annoy *self, int32_t item, int32_t tag, bool building) {
   if (item < 0) {
     PyErr_SetString(PyExc_IndexError, "Item index can not be negative");
     return false;
   } else if (!building && item >= self->ptr->get_n_items()) {
     PyErr_SetString(PyExc_IndexError, "Item index larger than the largest item index");
+    return false;
+  } else if (tag < 0) {
+    PyErr_SetString(PyExc_IndexError, "Item tag can not be negative");
+    return false;
+  } else if (self->ptr->get_n_tags() > 0 && item >= self->ptr->get_n_tags()) {
+    PyErr_SetString(PyExc_IndexError, "Tag index larger than the largest tag index");
     return false;
   } else {
     return true;
@@ -251,7 +277,7 @@ py_an_get_nns_by_item(py_annoy *self, PyObject *args, PyObject *kwargs) {
   if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ii|ii", (char**)kwlist, &item, &n, &search_k, &include_distances))
     return NULL;
 
-  if (!check_constraints(self, item, false)) {
+  if (!check_constraints(self, item, 0, false)) {
     return NULL;
   }
 
@@ -260,6 +286,30 @@ py_an_get_nns_by_item(py_annoy *self, PyObject *args, PyObject *kwargs) {
 
   Py_BEGIN_ALLOW_THREADS;
   self->ptr->get_nns_by_item(item, n, search_k, &result, include_distances ? &distances : NULL);
+  Py_END_ALLOW_THREADS;
+
+  return get_nns_to_python(result, distances, include_distances);
+}
+
+static PyObject* 
+py_an_get_nns_by_item_and_tag(py_annoy *self, PyObject *args, PyObject *kwargs) {
+  int32_t item, n, tag=-1, search_k=-1, include_distances=0;
+  if (!self->ptr) 
+    return NULL;
+
+  static char const * kwlist[] = {"i", "tag", "n", "search_k", "include_distances", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ii|ii", (char**)kwlist, &item, &tag, &n, &search_k, &include_distances))
+    return NULL;
+
+  if (!check_constraints(self, item, tag, false)) {
+    return NULL;
+  }
+
+  vector<int32_t> result;
+  vector<float> distances;
+
+  Py_BEGIN_ALLOW_THREADS;
+  self->ptr->get_nns_by_item_and_tag(item, tag, n, search_k, &result, include_distances ? &distances : NULL);
   Py_END_ALLOW_THREADS;
 
   return get_nns_to_python(result, distances, include_distances);
@@ -316,6 +366,32 @@ py_an_get_nns_by_vector(py_annoy *self, PyObject *args, PyObject *kwargs) {
   return get_nns_to_python(result, distances, include_distances);
 }
 
+static PyObject* 
+py_an_get_nns_by_vector_and_tag(py_annoy *self, PyObject *args, PyObject *kwargs) {
+  PyObject* v;
+  int32_t n, tag=-1, search_k=-1, include_distances=0;
+  if (!self->ptr) 
+    return NULL;
+
+  static char const * kwlist[] = {"vector", "tag", "n", "search_k", "include_distances", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oii|ii", (char**)kwlist, &v, &tag, &n, &search_k, &include_distances))
+    return NULL;
+
+  vector<float> w(self->f);
+  if (!convert_list_to_vector(v, self->f, &w)) {
+    return NULL;
+  }
+
+  vector<int32_t> result;
+  vector<float> distances;
+
+  Py_BEGIN_ALLOW_THREADS;
+  self->ptr->get_nns_by_vector_and_tag(&w[0], tag, n, search_k, &result, include_distances ? &distances : NULL);
+  Py_END_ALLOW_THREADS;
+
+  return get_nns_to_python(result, distances, include_distances);
+}
+
 
 static PyObject* 
 py_an_get_item_vector(py_annoy *self, PyObject *args) {
@@ -325,7 +401,7 @@ py_an_get_item_vector(py_annoy *self, PyObject *args) {
   if (!PyArg_ParseTuple(args, "i", &item))
     return NULL;
 
-  if (!check_constraints(self, item, false)) {
+  if (!check_constraints(self, item, 0, false)) {
     return NULL;
   }
 
@@ -339,18 +415,37 @@ py_an_get_item_vector(py_annoy *self, PyObject *args) {
   return l;
 }
 
+static PyObject* 
+py_an_get_item_tag(py_annoy *self, PyObject *args) {
+  int32_t item;
+  if (!self->ptr) 
+    return NULL;
+  if (!PyArg_ParseTuple(args, "i", &item))
+    return NULL;
+
+  if (!check_constraints(self, item, 0, false)) {
+    return NULL;
+  }
+
+  int32_t tag;
+  tag = self->ptr->get_item_tag(item);
+
+  return PyInt_FromLong(tag);
+}
+
 
 static PyObject* 
 py_an_add_item(py_annoy *self, PyObject *args, PyObject* kwargs) {
   PyObject* v;
   int32_t item;
+  int32_t tag=0;
   if (!self->ptr) 
     return NULL;
   static char const * kwlist[] = {"i", "vector", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iO", (char**)kwlist, &item, &v))
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iO", (char**)kwlist, &item, &v, &tag))
     return NULL;
 
-  if (!check_constraints(self, item, true)) {
+  if (!check_constraints(self, item, tag, true)) {
     return NULL;
   }
 
@@ -360,6 +455,34 @@ py_an_add_item(py_annoy *self, PyObject *args, PyObject* kwargs) {
   }
   char* error;
   if (!self->ptr->add_item(item, &w[0], &error)) {
+    PyErr_SetString(PyExc_Exception, error);
+    return NULL;
+  }
+
+  Py_RETURN_NONE;
+}
+
+static PyObject* 
+py_an_add_item_with_tag(py_annoy *self, PyObject *args, PyObject* kwargs) {
+  PyObject* v;
+  int32_t item;
+  int32_t tag=0;
+  if (!self->ptr) 
+    return NULL;
+  static char const * kwlist[] = {"i", "vector", "tag", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iOi", (char**)kwlist, &item, &v, &tag))
+    return NULL;
+
+  if (!check_constraints(self, item, tag, true)) {
+    return NULL;
+  }
+
+  vector<float> w(self->f);
+  if (!convert_list_to_vector(v, self->f, &w)) {
+    return NULL;
+  }
+  char* error;
+  if (!self->ptr->add_item_with_tag(item, &w[0], tag, &error)) {
     PyErr_SetString(PyExc_Exception, error);
     return NULL;
   }
@@ -440,7 +563,7 @@ py_an_get_distance(py_annoy *self, PyObject *args) {
   if (!PyArg_ParseTuple(args, "ii", &i, &j))
     return NULL;
 
-  if (!check_constraints(self, i, false) || !check_constraints(self, j, false)) {
+  if (!check_constraints(self, i, 0, false) || !check_constraints(self, j, 0, false)) {
     return NULL;
   }
 
@@ -464,6 +587,15 @@ py_an_get_n_trees(py_annoy *self) {
     return NULL;
 
   int32_t n = self->ptr->get_n_trees();
+  return PyInt_FromLong(n);
+}
+
+static PyObject *
+py_an_get_n_tags(py_annoy *self) {
+  if (!self->ptr) 
+    return NULL;
+
+  int32_t n = self->ptr->get_n_tags();
   return PyInt_FromLong(n);
 }
 
@@ -494,14 +626,18 @@ py_an_set_seed(py_annoy *self, PyObject *args) {
   Py_RETURN_NONE;
 }
 
-
+// TODO: Update the descriptive text for tags methods
 static PyMethodDef AnnoyMethods[] = {
   {"load",	(PyCFunction)py_an_load, METH_VARARGS | METH_KEYWORDS, "Loads (mmaps) an index from disk."},
   {"save",	(PyCFunction)py_an_save, METH_VARARGS | METH_KEYWORDS, "Saves the index to disk."},
   {"get_nns_by_item",(PyCFunction)py_an_get_nns_by_item, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to item `i`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
+  {"get_nns_by_item_and_tag",(PyCFunction)py_an_get_nns_by_item_and_tag, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to item `i`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
   {"get_nns_by_vector",(PyCFunction)py_an_get_nns_by_vector, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to vector `vector`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
+  {"get_nns_by_vector_and_tag",(PyCFunction)py_an_get_nns_by_vector_and_tag, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to vector `vector`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
   {"get_item_vector",(PyCFunction)py_an_get_item_vector, METH_VARARGS, "Returns the vector for item `i` that was previously added."},
+  {"get_item_tag",(PyCFunction)py_an_get_item_tag, METH_VARARGS, "Returns the vector for item `i` that was previously added."},
   {"add_item",(PyCFunction)py_an_add_item, METH_VARARGS | METH_KEYWORDS, "Adds item `i` (any nonnegative integer) with vector `v`.\n\nNote that it will allocate memory for `max(i)+1` items."},
+  {"add_item_with_tag",(PyCFunction)py_an_add_item_with_tag, METH_VARARGS | METH_KEYWORDS, "Adds item `i` (any nonnegative integer) with vector `v`.\n\nNote that it will allocate memory for `max(i)+1` items."},
   {"on_disk_build",(PyCFunction)py_an_on_disk_build, METH_VARARGS | METH_KEYWORDS, "Build will be performed with storage on disk instead of RAM."},
   {"build",(PyCFunction)py_an_build, METH_VARARGS | METH_KEYWORDS, "Builds a forest of `n_trees` trees.\n\nMore trees give higher precision when querying. After calling `build`,\nno more items can be added."},
   {"unbuild",(PyCFunction)py_an_unbuild, METH_NOARGS, "Unbuilds the tree in order to allows adding new items.\n\nbuild() has to be called again afterwards in order to\nrun queries."},
@@ -509,6 +645,7 @@ static PyMethodDef AnnoyMethods[] = {
   {"get_distance",(PyCFunction)py_an_get_distance, METH_VARARGS, "Returns the distance between items `i` and `j`."},
   {"get_n_items",(PyCFunction)py_an_get_n_items, METH_NOARGS, "Returns the number of items in the index."},
   {"get_n_trees",(PyCFunction)py_an_get_n_trees, METH_NOARGS, "Returns the number of trees in the index."},
+  {"get_n_tags",(PyCFunction)py_an_get_n_tags, METH_NOARGS, "Returns the number of tags in the index."},
   {"verbose",(PyCFunction)py_an_verbose, METH_VARARGS, ""},
   {"set_seed",(PyCFunction)py_an_set_seed, METH_VARARGS, "Sets the seed of Annoy's random number generator."},
   {NULL, NULL, 0, NULL}		 /* Sentinel */
