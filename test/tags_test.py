@@ -25,37 +25,37 @@ class TagsTest(TestCase):
 
         self.assertEqual(i.get_n_tags(), n_tags)
 
-    def test_add_item_with_tag(self):
+    def test_add_item_with_tags(self):
         f = 2
         n_tags = 3
         i = AnnoyIndex(f, 'dot', n_tags)
-        i.add_item_with_tag(0, [2, 2], 0)
-        i.add_item_with_tag(1, [3, 2], 1)
-        i.add_item_with_tag(2, [3, 3], 2)
+        i.add_item_with_tags(0, [2, 2], [0])
+        i.add_item_with_tags(1, [3, 2], [1])
+        i.add_item_with_tags(2, [3, 3], [2])
         i.build(10)
 
         self.assertEqual(i.get_n_items(), 3)
 
-    def test_get_item_tag(self):
+    def test_get_item_tags(self):
         f = 2
         n_tags = 3
         i = AnnoyIndex(f, 'dot', n_tags)
-        i.add_item_with_tag(0, [2, 2], 0)
-        i.add_item_with_tag(1, [3, 2], 1)
-        i.add_item_with_tag(2, [3, 3], 2)
+        i.add_item_with_tags(0, [2, 2], [0])
+        i.add_item_with_tags(1, [3, 2], [1])
+        i.add_item_with_tags(2, [3, 3], [2])
         i.build(10)
 
-        self.assertEqual(i.get_item_tag(0), 0)
-        self.assertEqual(i.get_item_tag(1), 1)
-        self.assertEqual(i.get_item_tag(2), 2)
+        self.assertEqual(i.get_item_tags(0), [0])
+        self.assertEqual(i.get_item_tags(1), [1])
+        self.assertEqual(i.get_item_tags(2), [2])
 
-    def test_get_nns_by_item_and_tag(self):
+    def test_get_nns_by_item_and_tags(self):
         f = 2
         n_tags = 3
         i = AnnoyIndex(f, 'dot', n_tags)
-        i.add_item_with_tag(0, [2, 2], 0)
-        i.add_item_with_tag(1, [3, 2], 1)
-        i.add_item_with_tag(2, [3, 3], 2)
+        i.add_item_with_tags(0, [2, 2], [0])
+        i.add_item_with_tags(1, [3, 2], [1])
+        i.add_item_with_tags(2, [3, 3], [2])
         i.build(10)
         
         expected_ids = [2, 1, 0]
@@ -65,16 +65,16 @@ class TagsTest(TestCase):
         self.assertEqual(i.get_nns_by_item(0, num_neighbors), [2, 1, 0])
         self.assertEqual(i.get_nns_by_item(2, num_neighbors), [2, 1, 0])
 
-        self.assertEqual(i.get_nns_by_item_and_tag(0, 1, num_neighbors), [1])
-        self.assertEqual(i.get_nns_by_item_and_tag(2, 1, num_neighbors), [1])
+        self.assertEqual(i.get_nns_by_item_and_tags(0, [1], num_neighbors), [1])
+        self.assertEqual(i.get_nns_by_item_and_tags(2, [1], num_neighbors), [1])
 
-    def test_get_nns_by_vector_and_tag(self):
+    def test_get_nns_by_vector_and_tags(self):
         f = 2
         n_tags = 3
         i = AnnoyIndex(f, 'dot', n_tags)
-        i.add_item_with_tag(0, [2, 2], 1)
-        i.add_item_with_tag(1, [3, 2], 1)
-        i.add_item_with_tag(2, [3, 3], 0)
+        i.add_item_with_tags(0, [2, 2], [1])
+        i.add_item_with_tags(1, [3, 2], [1])
+        i.add_item_with_tags(2, [3, 3], [0])
         i.build(10)
         
         num_neighbors = 3
@@ -85,9 +85,9 @@ class TagsTest(TestCase):
         self.assertEqual(i.get_nns_by_vector([1, 1], num_neighbors), expected_ids)
         self.assertEqual(i.get_nns_by_vector([4, 2], num_neighbors), expected_ids)
 
-        search_tag = 1
+        search_tag = [1]
         expected_ids = [1,0]
 
-        self.assertEqual(i.get_nns_by_vector_and_tag([4, 4], search_tag, num_neighbors), expected_ids)
-        self.assertEqual(i.get_nns_by_vector_and_tag([1, 1], search_tag, num_neighbors), expected_ids)
-        self.assertEqual(i.get_nns_by_vector_and_tag([4, 2], search_tag, num_neighbors), expected_ids)
+        self.assertEqual(i.get_nns_by_vector_and_tags([4, 4], search_tag, num_neighbors), expected_ids)
+        self.assertEqual(i.get_nns_by_vector_and_tags([1, 1], search_tag, num_neighbors), expected_ids)
+        self.assertEqual(i.get_nns_by_vector_and_tags([4, 2], search_tag, num_neighbors), expected_ids)

@@ -17,6 +17,7 @@
 #include "Python.h"
 #include "structmember.h"
 #include <exception>
+#include <algorithm>
 #if defined(_MSC_VER) && _MSC_VER == 1500
 typedef signed __int32    int32_t;
 #else
@@ -66,10 +67,10 @@ public:
     _pack(w, &w_internal[0]);
     return _index.add_item(item, &w_internal[0], error);
   };
-  bool add_item_with_tag(int32_t item, const float* w, int32_t tag, char**error) {
+  bool add_item_with_tags(int32_t item, const float* w, vector<int32_t> tags, char**error) {
     vector<uint64_t> w_internal(_f_internal, 0);
     _pack(w, &w_internal[0]);
-    return _index.add_item_with_tag(item, &w_internal[0], tag, error);
+    return _index.add_item_with_tags(item, &w_internal[0], tags, error);
   };
   bool build(int q, char** error) { return _index.build(q, error); };
   bool unbuild(char** error) { return _index.unbuild(error); };
@@ -86,7 +87,7 @@ public:
       _index.get_nns_by_item(item, n, search_k, result, NULL);
     }
   };
-  void get_nns_by_item_and_tag(int32_t item, int tag, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
+  void get_nns_by_item_and_tags(int32_t item, vector<int32_t> tags, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
     // TODO: Actually implement this
     get_nns_by_item(item, n, search_k, result, distances);
   };
@@ -101,7 +102,7 @@ public:
       _index.get_nns_by_vector(&w_internal[0], n, search_k, result, NULL);
     }
   };
-  void get_nns_by_vector_and_tag(const float* w, int tag, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
+  void get_nns_by_vector_and_tags(const float* w, vector<int32_t> tags, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
     // TODO: Actually implement this
     get_nns_by_vector(w, n, search_k, result, distances);
   };
@@ -114,8 +115,8 @@ public:
     _index.get_item(item, &v_internal[0]);
     _unpack(&v_internal[0], v);
   };
-  int32_t get_item_tag(int32_t item) const {
-    return _index.get_item_tag(item);
+  void get_item_tags(int32_t item, vector<int32_t>* result) const {
+    _index.get_item_tags(item, result);
   };
   void set_seed(int q) { _index.set_seed(q); };
   bool on_disk_build(const char* filename, char** error) { return _index.on_disk_build(filename, error); };
@@ -249,17 +250,23 @@ get_nns_to_python(const vector<int32_t>& result, const vector<float>& distances,
 }
 
 
-bool check_constraints(py_annoy *self, int32_t item, int32_t tag, bool building) {
+bool check_item_constraints(py_annoy *self, int32_t item, bool building) {
   if (item < 0) {
     PyErr_SetString(PyExc_IndexError, "Item index can not be negative");
     return false;
   } else if (!building && item >= self->ptr->get_n_items()) {
     PyErr_SetString(PyExc_IndexError, "Item index larger than the largest item index");
     return false;
-  } else if (tag < 0) {
+  } else {
+    return true;
+  }
+}
+
+bool check_tag_constraints(py_annoy *self, vector<int32_t> tags) {
+  if (std::any_of(tags.begin(), tags.end(), [](int i){ return i < 0; })) {
     PyErr_SetString(PyExc_IndexError, "Item tag can not be negative");
     return false;
-  } else if (self->ptr->get_n_tags() > 0 && item >= self->ptr->get_n_tags()) {
+  } else if (self->ptr->get_n_tags() > 0 && std::any_of(tags.begin(), tags.end(), [&self](int i){ return i >= self->ptr->get_n_tags(); })) {
     PyErr_SetString(PyExc_IndexError, "Tag index larger than the largest tag index");
     return false;
   } else {
@@ -277,7 +284,7 @@ py_an_get_nns_by_item(py_annoy *self, PyObject *args, PyObject *kwargs) {
   if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ii|ii", (char**)kwlist, &item, &n, &search_k, &include_distances))
     return NULL;
 
-  if (!check_constraints(self, item, 0, false)) {
+  if (!check_item_constraints(self, item, false)) {
     return NULL;
   }
 
@@ -291,17 +298,45 @@ py_an_get_nns_by_item(py_annoy *self, PyObject *args, PyObject *kwargs) {
   return get_nns_to_python(result, distances, include_distances);
 }
 
+bool
+convert_list_to_int_vector(PyObject* v, vector<int32_t>* t) {
+  if (PyObject_Size(v) == -1) {
+    char buf[256];
+    snprintf(buf, 256, "Expected an iterable, got an object of type \"%s\"", v->ob_type->tp_name);
+    PyErr_SetString(PyExc_ValueError, buf);
+    return false;
+  }
+  for (int z = 0; z < PyObject_Size(v); z++) {
+    PyObject *key = PyInt_FromLong(z);
+    PyObject *pi = PyObject_GetItem(v, key);
+    t->push_back(PyLong_AsLong(pi));
+    Py_DECREF(key);
+    Py_DECREF(pi);
+  }
+  return true;
+}
+
 static PyObject* 
-py_an_get_nns_by_item_and_tag(py_annoy *self, PyObject *args, PyObject *kwargs) {
-  int32_t item, n, tag=-1, search_k=-1, include_distances=0;
+py_an_get_nns_by_item_and_tags(py_annoy *self, PyObject *args, PyObject *kwargs) {
+  int32_t item, n, search_k=-1, include_distances=0;
+  PyObject* t;
   if (!self->ptr) 
     return NULL;
 
-  static char const * kwlist[] = {"i", "tag", "n", "search_k", "include_distances", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "ii|ii", (char**)kwlist, &item, &tag, &n, &search_k, &include_distances))
+  static char const * kwlist[] = {"i", "tags", "n", "search_k", "include_distances", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iOi|ii", (char**)kwlist, &item, &t, &n, &search_k, &include_distances))
     return NULL;
 
-  if (!check_constraints(self, item, tag, false)) {
+  if (!check_item_constraints(self, item, false)) {
+    return NULL;
+  }
+
+  vector<int32_t> tags;
+  if (!convert_list_to_int_vector(t, &tags)) {
+    return NULL;
+  }  
+
+  if (!check_tag_constraints(self, tags)) {
     return NULL;
   }
 
@@ -309,7 +344,7 @@ py_an_get_nns_by_item_and_tag(py_annoy *self, PyObject *args, PyObject *kwargs) 
   vector<float> distances;
 
   Py_BEGIN_ALLOW_THREADS;
-  self->ptr->get_nns_by_item_and_tag(item, tag, n, search_k, &result, include_distances ? &distances : NULL);
+  self->ptr->get_nns_by_item_and_tags(item, tags, n, search_k, &result, include_distances ? &distances : NULL);
   Py_END_ALLOW_THREADS;
 
   return get_nns_to_python(result, distances, include_distances);
@@ -317,7 +352,7 @@ py_an_get_nns_by_item_and_tag(py_annoy *self, PyObject *args, PyObject *kwargs) 
 
 
 bool
-convert_list_to_vector(PyObject* v, int f, vector<float>* w) {
+convert_list_to_float_vector(PyObject* v, int f, vector<float>* w) {
   if (PyObject_Size(v) == -1) {
     char buf[256];
     snprintf(buf, 256, "Expected an iterable, got an object of type \"%s\"", v->ob_type->tp_name);
@@ -352,7 +387,7 @@ py_an_get_nns_by_vector(py_annoy *self, PyObject *args, PyObject *kwargs) {
     return NULL;
 
   vector<float> w(self->f);
-  if (!convert_list_to_vector(v, self->f, &w)) {
+  if (!convert_list_to_float_vector(v, self->f, &w)) {
     return NULL;
   }
 
@@ -367,18 +402,24 @@ py_an_get_nns_by_vector(py_annoy *self, PyObject *args, PyObject *kwargs) {
 }
 
 static PyObject* 
-py_an_get_nns_by_vector_and_tag(py_annoy *self, PyObject *args, PyObject *kwargs) {
+py_an_get_nns_by_vector_and_tags(py_annoy *self, PyObject *args, PyObject *kwargs) {
   PyObject* v;
-  int32_t n, tag=-1, search_k=-1, include_distances=0;
+  PyObject* t;
+  int32_t n, search_k=-1, include_distances=0;
   if (!self->ptr) 
     return NULL;
 
-  static char const * kwlist[] = {"vector", "tag", "n", "search_k", "include_distances", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "Oii|ii", (char**)kwlist, &v, &tag, &n, &search_k, &include_distances))
+  static char const * kwlist[] = {"vector", "tags", "n", "search_k", "include_distances", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOi|ii", (char**)kwlist, &v, &t, &n, &search_k, &include_distances))
     return NULL;
 
   vector<float> w(self->f);
-  if (!convert_list_to_vector(v, self->f, &w)) {
+  if (!convert_list_to_float_vector(v, self->f, &w)) {
+    return NULL;
+  }
+
+  vector<int32_t> tags;
+  if (!convert_list_to_int_vector(t, &tags)) {
     return NULL;
   }
 
@@ -386,7 +427,7 @@ py_an_get_nns_by_vector_and_tag(py_annoy *self, PyObject *args, PyObject *kwargs
   vector<float> distances;
 
   Py_BEGIN_ALLOW_THREADS;
-  self->ptr->get_nns_by_vector_and_tag(&w[0], tag, n, search_k, &result, include_distances ? &distances : NULL);
+  self->ptr->get_nns_by_vector_and_tags(&w[0], tags, n, search_k, &result, include_distances ? &distances : NULL);
   Py_END_ALLOW_THREADS;
 
   return get_nns_to_python(result, distances, include_distances);
@@ -401,7 +442,7 @@ py_an_get_item_vector(py_annoy *self, PyObject *args) {
   if (!PyArg_ParseTuple(args, "i", &item))
     return NULL;
 
-  if (!check_constraints(self, item, 0, false)) {
+  if (!check_item_constraints(self, item, false)) {
     return NULL;
   }
 
@@ -416,21 +457,25 @@ py_an_get_item_vector(py_annoy *self, PyObject *args) {
 }
 
 static PyObject* 
-py_an_get_item_tag(py_annoy *self, PyObject *args) {
+py_an_get_item_tags(py_annoy *self, PyObject *args) {
   int32_t item;
   if (!self->ptr) 
     return NULL;
   if (!PyArg_ParseTuple(args, "i", &item))
     return NULL;
 
-  if (!check_constraints(self, item, 0, false)) {
+  if (!check_item_constraints(self, item, false)) {
     return NULL;
   }
 
-  int32_t tag;
-  tag = self->ptr->get_item_tag(item);
+  vector<int32_t> result;
+  self->ptr->get_item_tags(item, &result);
+  
+  PyObject* l = PyList_New(result.size());
+  for (size_t i = 0; i < result.size(); i++)
+    PyList_SetItem(l, i, PyInt_FromLong(result[i]));
 
-  return PyInt_FromLong(tag);
+  return l;
 }
 
 
@@ -438,19 +483,18 @@ static PyObject*
 py_an_add_item(py_annoy *self, PyObject *args, PyObject* kwargs) {
   PyObject* v;
   int32_t item;
-  int32_t tag=0;
   if (!self->ptr) 
     return NULL;
   static char const * kwlist[] = {"i", "vector", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iO", (char**)kwlist, &item, &v, &tag))
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iO", (char**)kwlist, &item, &v))
     return NULL;
 
-  if (!check_constraints(self, item, tag, true)) {
+  if (!check_item_constraints(self, item, true)) {
     return NULL;
   }
 
   vector<float> w(self->f);
-  if (!convert_list_to_vector(v, self->f, &w)) {
+  if (!convert_list_to_float_vector(v, self->f, &w)) {
     return NULL;
   }
   char* error;
@@ -463,26 +507,37 @@ py_an_add_item(py_annoy *self, PyObject *args, PyObject* kwargs) {
 }
 
 static PyObject* 
-py_an_add_item_with_tag(py_annoy *self, PyObject *args, PyObject* kwargs) {
+py_an_add_item_with_tags(py_annoy *self, PyObject *args, PyObject* kwargs) {
   PyObject* v;
+  PyObject* t;
   int32_t item;
-  int32_t tag=0;
+
   if (!self->ptr) 
     return NULL;
-  static char const * kwlist[] = {"i", "vector", "tag", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iOi", (char**)kwlist, &item, &v, &tag))
+  static char const * kwlist[] = {"i", "vector", "tags", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iOO", (char**)kwlist, &item, &v, &t))
     return NULL;
 
-  if (!check_constraints(self, item, tag, true)) {
+  if (!check_item_constraints(self, item, true)) {
     return NULL;
   }
 
   vector<float> w(self->f);
-  if (!convert_list_to_vector(v, self->f, &w)) {
+  if (!convert_list_to_float_vector(v, self->f, &w)) {
     return NULL;
   }
+
+  vector<int32_t> tags;
+  if (!convert_list_to_int_vector(t, &tags)) {
+    return NULL;
+  }
+
+  if (!check_tag_constraints(self, tags)) {
+    return NULL;
+  }
+
   char* error;
-  if (!self->ptr->add_item_with_tag(item, &w[0], tag, &error)) {
+  if (!self->ptr->add_item_with_tags(item, &w[0], tags, &error)) {
     PyErr_SetString(PyExc_Exception, error);
     return NULL;
   }
@@ -563,7 +618,7 @@ py_an_get_distance(py_annoy *self, PyObject *args) {
   if (!PyArg_ParseTuple(args, "ii", &i, &j))
     return NULL;
 
-  if (!check_constraints(self, i, 0, false) || !check_constraints(self, j, 0, false)) {
+  if (!check_item_constraints(self, i, false) || !check_item_constraints(self, j, false)) {
     return NULL;
   }
 
@@ -631,13 +686,13 @@ static PyMethodDef AnnoyMethods[] = {
   {"load",	(PyCFunction)py_an_load, METH_VARARGS | METH_KEYWORDS, "Loads (mmaps) an index from disk."},
   {"save",	(PyCFunction)py_an_save, METH_VARARGS | METH_KEYWORDS, "Saves the index to disk."},
   {"get_nns_by_item",(PyCFunction)py_an_get_nns_by_item, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to item `i`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
-  {"get_nns_by_item_and_tag",(PyCFunction)py_an_get_nns_by_item_and_tag, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to item `i`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
+  {"get_nns_by_item_and_tags",(PyCFunction)py_an_get_nns_by_item_and_tags, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to item `i`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
   {"get_nns_by_vector",(PyCFunction)py_an_get_nns_by_vector, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to vector `vector`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
-  {"get_nns_by_vector_and_tag",(PyCFunction)py_an_get_nns_by_vector_and_tag, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to vector `vector`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
+  {"get_nns_by_vector_and_tags",(PyCFunction)py_an_get_nns_by_vector_and_tags, METH_VARARGS | METH_KEYWORDS, "Returns the `n` closest items to vector `vector`.\n\n:param search_k: the query will inspect up to `search_k` nodes.\n`search_k` gives you a run-time tradeoff between better accuracy and speed.\n`search_k` defaults to `n_trees * n` if not provided.\n\n:param include_distances: If `True`, this function will return a\n2 element tuple of lists. The first list contains the `n` closest items.\nThe second list contains the corresponding distances."},
   {"get_item_vector",(PyCFunction)py_an_get_item_vector, METH_VARARGS, "Returns the vector for item `i` that was previously added."},
-  {"get_item_tag",(PyCFunction)py_an_get_item_tag, METH_VARARGS, "Returns the vector for item `i` that was previously added."},
+  {"get_item_tags",(PyCFunction)py_an_get_item_tags, METH_VARARGS, "Returns the vector for item `i` that was previously added."},
   {"add_item",(PyCFunction)py_an_add_item, METH_VARARGS | METH_KEYWORDS, "Adds item `i` (any nonnegative integer) with vector `v`.\n\nNote that it will allocate memory for `max(i)+1` items."},
-  {"add_item_with_tag",(PyCFunction)py_an_add_item_with_tag, METH_VARARGS | METH_KEYWORDS, "Adds item `i` (any nonnegative integer) with vector `v`.\n\nNote that it will allocate memory for `max(i)+1` items."},
+  {"add_item_with_tags",(PyCFunction)py_an_add_item_with_tags, METH_VARARGS | METH_KEYWORDS, "Adds item `i` (any nonnegative integer) with vector `v`.\n\nNote that it will allocate memory for `max(i)+1` items."},
   {"on_disk_build",(PyCFunction)py_an_on_disk_build, METH_VARARGS | METH_KEYWORDS, "Build will be performed with storage on disk instead of RAM."},
   {"build",(PyCFunction)py_an_build, METH_VARARGS | METH_KEYWORDS, "Builds a forest of `n_trees` trees.\n\nMore trees give higher precision when querying. After calling `build`,\nno more items can be added."},
   {"unbuild",(PyCFunction)py_an_unbuild, METH_NOARGS, "Unbuilds the tree in order to allows adding new items.\n\nbuild() has to be called again afterwards in order to\nrun queries."},
