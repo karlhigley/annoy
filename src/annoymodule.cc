@@ -87,7 +87,7 @@ public:
       _index.get_nns_by_item(item, n, search_k, result, NULL);
     }
   };
-  void get_nns_by_item_and_tags(int32_t item, vector<int32_t> tags, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
+  void get_nns_by_item_and_tags(int32_t item, vector<int32_t> tags, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances, bool match_all=false) const {
     // TODO: Actually implement this
     get_nns_by_item(item, n, search_k, result, distances);
   };
@@ -102,7 +102,7 @@ public:
       _index.get_nns_by_vector(&w_internal[0], n, search_k, result, NULL);
     }
   };
-  void get_nns_by_vector_and_tags(const float* w, vector<int32_t> tags, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances) const {
+  void get_nns_by_vector_and_tags(const float* w, vector<int32_t> tags, size_t n, size_t search_k, vector<int32_t>* result, vector<float>* distances, bool match_all=false) const {
     // TODO: Actually implement this
     get_nns_by_vector(w, n, search_k, result, distances);
   };
@@ -318,13 +318,13 @@ convert_list_to_int_vector(PyObject* v, vector<int32_t>* t) {
 
 static PyObject* 
 py_an_get_nns_by_item_and_tags(py_annoy *self, PyObject *args, PyObject *kwargs) {
-  int32_t item, n, search_k=-1, include_distances=0;
+  int32_t item, n, search_k=-1, include_distances=0, match_all=0;
   PyObject* t;
   if (!self->ptr) 
     return NULL;
 
-  static char const * kwlist[] = {"i", "tags", "n", "search_k", "include_distances", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iOi|ii", (char**)kwlist, &item, &t, &n, &search_k, &include_distances))
+  static char const * kwlist[] = {"i", "tags", "n", "search_k", "include_distances", "match_all", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "iOi|iii", (char**)kwlist, &item, &t, &n, &search_k, &include_distances, &match_all))
     return NULL;
 
   if (!check_item_constraints(self, item, false)) {
@@ -344,7 +344,7 @@ py_an_get_nns_by_item_and_tags(py_annoy *self, PyObject *args, PyObject *kwargs)
   vector<float> distances;
 
   Py_BEGIN_ALLOW_THREADS;
-  self->ptr->get_nns_by_item_and_tags(item, tags, n, search_k, &result, include_distances ? &distances : NULL);
+  self->ptr->get_nns_by_item_and_tags(item, tags, n, search_k, &result, include_distances ? &distances : NULL, match_all);
   Py_END_ALLOW_THREADS;
 
   return get_nns_to_python(result, distances, include_distances);
@@ -405,12 +405,12 @@ static PyObject*
 py_an_get_nns_by_vector_and_tags(py_annoy *self, PyObject *args, PyObject *kwargs) {
   PyObject* v;
   PyObject* t;
-  int32_t n, search_k=-1, include_distances=0;
+  int32_t n, search_k=-1, include_distances=0, match_all=0;
   if (!self->ptr) 
     return NULL;
 
-  static char const * kwlist[] = {"vector", "tags", "n", "search_k", "include_distances", NULL};
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOi|ii", (char**)kwlist, &v, &t, &n, &search_k, &include_distances))
+  static char const * kwlist[] = {"vector", "tags", "n", "search_k", "include_distances", "match_all", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOi|iii", (char**)kwlist, &v, &t, &n, &search_k, &include_distances, &match_all))
     return NULL;
 
   vector<float> w(self->f);
@@ -427,7 +427,7 @@ py_an_get_nns_by_vector_and_tags(py_annoy *self, PyObject *args, PyObject *kwarg
   vector<float> distances;
 
   Py_BEGIN_ALLOW_THREADS;
-  self->ptr->get_nns_by_vector_and_tags(&w[0], tags, n, search_k, &result, include_distances ? &distances : NULL);
+  self->ptr->get_nns_by_vector_and_tags(&w[0], tags, n, search_k, &result, include_distances ? &distances : NULL, match_all);
   Py_END_ALLOW_THREADS;
 
   return get_nns_to_python(result, distances, include_distances);

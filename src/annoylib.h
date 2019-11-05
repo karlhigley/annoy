@@ -801,9 +801,9 @@ class AnnoyIndexInterface {
   virtual bool load(const char* filename, bool prefault=false, char** error=NULL) = 0;
   virtual T get_distance(S i, S j) const = 0;
   virtual void get_nns_by_item(S item, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const = 0;
-  virtual void get_nns_by_item_and_tags(S item, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const = 0;
+  virtual void get_nns_by_item_and_tags(S item, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances, bool match_all=false) const = 0;
   virtual void get_nns_by_vector(const T* w, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const = 0;
-  virtual void get_nns_by_vector_and_tags(const T* w, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const = 0;
+  virtual void get_nns_by_vector_and_tags(const T* w, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances, bool match_all=false) const = 0;
   virtual S get_n_items() const = 0;
   virtual S get_n_trees() const = 0;
   virtual S get_n_tags() const = 0;
@@ -1127,10 +1127,10 @@ public:
     _get_all_nns(m->v, empty_tags, n, search_k, result, distances);
   }
 
-  void get_nns_by_item_and_tags(S item, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
+  void get_nns_by_item_and_tags(S item, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances, bool match_all=false) const {
     // TODO: handle OOB
     const Node* m = _get(item);
-    _get_all_nns(m->v, tags, n, search_k, result, distances);
+    _get_all_nns(m->v, tags, n, search_k, result, distances, match_all);
   }
 
   void get_nns_by_vector(const T* w, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
@@ -1138,8 +1138,8 @@ public:
     _get_all_nns(w, empty_tags, n, search_k, result, distances);
   }
 
-  void get_nns_by_vector_and_tags(const T* w, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
-    _get_all_nns(w, tags, n, search_k, result, distances);
+  void get_nns_by_vector_and_tags(const T* w, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances, bool match_all=false) const {
+    _get_all_nns(w, tags, n, search_k, result, distances, match_all);
   }
 
   S get_n_items() const {
@@ -1287,7 +1287,15 @@ protected:
     return item;
   }
 
-  void _get_all_nns(const T* v, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances) const {
+  bool tag_match(boost::dynamic_bitset<> item_tags, boost::dynamic_bitset<> search_tags, bool match_all=false) const {
+    if (match_all) {
+      return search_tags.is_subset_of(item_tags);
+    } else {
+      return item_tags.intersects(search_tags);
+    }
+  }
+
+  void _get_all_nns(const T* v, vector<S> tags, size_t n, size_t search_k, vector<S>* result, vector<T>* distances, bool match_all=false) const {
     Node* v_node = (Node *)alloca(_s);
     D::template zero_value<Node>(v_node);
     memcpy(v_node->v, v, sizeof(T) * _f);
@@ -1315,7 +1323,7 @@ protected:
       Node* nd = _get(i);
       q.pop();
       if (nd->n_descendants == 1 && i < _n_items) {
-        if (tags.size() == 0 || nd->tags == tags_bitset) {
+        if (tags.size() == 0 || tag_match(nd->tags, tags_bitset, match_all)) {
           nns.push_back(i);
         }
       } else if (nd->n_descendants <= _K) {
@@ -1326,7 +1334,7 @@ protected:
           for (S c = 0; c < nd->n_descendants; c++)
           {
             Node* child = _get(dst[c]);
-            if (child->tags == tags_bitset) {
+            if (tag_match(child->tags, tags_bitset, match_all)) {
               nns.push_back(dst[c]);
             }
           }
